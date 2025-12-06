@@ -10,153 +10,71 @@ Original file is located at
 import streamlit as st
 import pandas as pd
 import numpy as np
-import random
 
-st.set_page_config(layout="wide", page_title="Product Module Simulation")
+st.title("E-commerce Item Selection Simulation")
+st.subheader("All categories compete for the 6-slot product module")
 
-# -------------------------------------------------------------------------
-# Category-specific Optimal Weight Profiles
-# -------------------------------------------------------------------------
-CATEGORY_WEIGHTS = {
-    "Collectibles":     {"relevance":0.35, "diversity":0.30, "freshness":0.20, "monetization":0.15},
-    "Electronics":      {"relevance":0.45, "diversity":0.15, "freshness":0.10, "monetization":0.30},
-    "Toys":             {"relevance":0.30, "diversity":0.25, "freshness":0.30, "monetization":0.15},
-    "Makeup / Beauty":  {"relevance":0.40, "diversity":0.20, "freshness":0.25, "monetization":0.15}
+# -----------------------------
+# Category optimal weights
+# (intuition-building)
+# -----------------------------
+category_weights = {
+    "Collectibles":  {"relevance": 0.55, "diversity": 0.30, "freshness": 0.40, "monetization": 0.25},
+    "Electronics":   {"relevance": 0.75, "diversity": 0.10, "freshness": 0.35, "monetization": 0.40},
+    "Toys":          {"relevance": 0.60, "diversity": 0.25, "freshness": 0.45, "monetization": 0.20},
+    "Makeup":        {"relevance": 0.65, "diversity": 0.20, "freshness": 0.50, "monetization": 0.30},
 }
 
-# -------------------------------------------------------------------------
-# Mock Data Generator
-# -------------------------------------------------------------------------
-def generate_mock_products(n, category):
-    names = {
-        "Collectibles": [
-            "Pokemon Booster Pack", "Vintage Comic Book", "Signed Baseball", 
-            "Funkopop Exclusive", "Retro Trading Card"
-        ],
-        "Electronics": [
-            "Apple AirPods Pro", "Samsung Galaxy Watch", "Sony WH1000XM5 Headphones",
-            "Lenovo ThinkPad X1", "iPad Mini"
-        ],
-        "Toys": [
-            "Lego Star Wars Set", "Barbie Dream House", "Hot Wheels Track Builder",
-            "Nerf Elite Blaster", "Pokemon Plush"
-        ],
-        "Makeup / Beauty": [
-            "Fenty Gloss Bomb", "Charlotte Tilbury Pillow Talk Trio", 
-            "Rare Beauty Lip Oil", "Dior Lip Glow", "Huda Beauty Palette"
-        ]
-    }
+# Display optimal values
+with st.expander("Optimal Values per Category (intuition)"):
+    st.write(pd.DataFrame(category_weights).T)
 
-    price_bands = ["Low", "Mid", "High"]
+# -----------------------------
+# Create sample item inventory
+# -----------------------------
+np.random.seed(42)
 
-    data = []
-    for i in range(n):
-        data.append({
-            "item_id": f"ITEM_{i+1}",
-            "name": random.choice(names[category]),
-            "relevance_score": random.uniform(0.4, 1.0),
-            "recommendation_score": random.uniform(0.4, 1.0),
-            "quality_score": random.uniform(0.4, 1.0),
-            "popularity_score": random.uniform(0.4, 1.0),
-            "seller_health": random.uniform(0.4, 1.0),
-            "freshness_score": random.uniform(0.3, 1.0),
-            "sponsored": random.choice([0,0,0,1]),  # 25% sponsored
-            "subcat": random.choice(["Premium", "Budget", "Collector", "Classic", "Trending"]),
-            "price_band": random.choice(price_bands)
+items = []
+categories = list(category_weights.keys())
+
+for cat in categories:
+    for i in range(10):
+        items.append({
+            "item_id": f"{cat[:3]}_{i}",
+            "category": cat,
+            "relevance": np.random.uniform(0.4, 0.95),
+            "diversity_signal": np.random.uniform(0.1, 0.9),
+            "freshness": np.random.uniform(0.2, 0.95),
+            "monetization": np.random.uniform(0.1, 0.95),
         })
-    return pd.DataFrame(data)
 
-# -------------------------------------------------------------------------
-# Scoring Function
-# -------------------------------------------------------------------------
-def compute_score(row, used_subcats, weights, current_sponsored, max_sponsored):
-    score = (
-        row["relevance_score"]      * weights["relevance"] +
-        row["freshness_score"]      * weights["freshness"] +
-        row["popularity_score"]     * 0.10 +
-        row["quality_score"]        * 0.10 +
-        row["seller_health"]        * 0.10
+df = pd.DataFrame(items)
+
+st.subheader("Global Weight Controls (applied to final scoring)")
+rel = st.slider("Relevance Weight", 0.0, 1.0, 0.5)
+div = st.slider("Diversity Weight", 0.0, 1.0, 0.2)
+fre = st.slider("Freshness Weight", 0.0, 1.0, 0.3)
+mon = st.slider("Monetization Weight", 0.0, 1.0, 0.3)
+
+# -----------------------------------
+# Compute final global score
+# -----------------------------------
+def score(row):
+    cat = row["category"]
+    catw = category_weights[cat]
+    
+    # Combine item signals with category-specific intuition
+    return (
+        row["relevance"]     * rel * catw["relevance"] +
+        row["diversity_signal"] * div * catw["diversity"] +
+        row["freshness"]     * fre * catw["freshness"] +
+        row["monetization"]  * mon * catw["monetization"]
     )
 
-    # Diversity penalty
-    if row["subcat"] in used_subcats:
-        score -= weights["diversity"] * used_subcats[row["subcat"]]
+df["final_score"] = df.apply(score, axis=1)
 
-    # Sponsored bonus
-    if row["sponsored"] == 1 and current_sponsored < max_sponsored:
-        score += weights["monetization"]
+# Pick top 6 competing items
+top6 = df.sort_values("final_score", ascending=False).head(6)
 
-    return score
-
-# -------------------------------------------------------------------------
-# Simulation Loop (6 Slots)
-# -------------------------------------------------------------------------
-def simulate_selection(df, weights, max_sponsored=2):
-    df = df.copy()
-    selected = []
-    used_subcats = {}
-    current_sponsored = 0
-
-    for _ in range(6):
-        df["dynamic_score"] = df.apply(
-            lambda row: compute_score(
-                row, 
-                used_subcats, 
-                weights,
-                current_sponsored, 
-                max_sponsored
-            ), 
-            axis=1
-        )
-
-        best_item = df.sort_values("dynamic_score", ascending=False).iloc[0]
-        selected.append(best_item)
-
-        subcat = best_item["subcat"]
-        used_subcats[subcat] = used_subcats.get(subcat, 0) + 1
-        if best_item["sponsored"] == 1:
-            current_sponsored += 1
-
-        df = df[df["item_id"] != best_item["item_id"]]
-
-    return selected
-
-# -------------------------------------------------------------------------
-# UI
-# -------------------------------------------------------------------------
-st.title("🛒 E-Commerce 6-Slot Horizontal Module Simulation")
-
-category = st.sidebar.selectbox(
-    "Choose Category",
-    ["Collectibles", "Electronics", "Toys", "Makeup / Beauty"]
-)
-
-st.sidebar.write("### Optimal Embedded Weights")
-optimal = CATEGORY_WEIGHTS[category]
-st.sidebar.write(optimal)
-
-num_products = st.sidebar.number_input("Number of Products", 10, 100, 40)
-max_sponsored = st.sidebar.slider("Max Sponsored Slots", 0, 6, 2)
-
-df = generate_mock_products(num_products, category)
-
-if st.sidebar.button("Run Simulation"):
-    selected = simulate_selection(df, optimal, max_sponsored)
-
-    st.subheader("🎯 Final 6 Recommended Items")
-    cols = st.columns(6)
-
-    for i, item in enumerate(selected):
-        with cols[i]:
-            st.markdown(f"### Slot {i+1}")
-            st.write(f"**{item['name']}**")
-            st.write(f"Subcat: {item['subcat']}")
-            st.write(f"Sponsored: {'Yes' if item['sponsored'] else 'No'}")
-            st.write(f"Freshness: {item['freshness_score']:.2f}")
-            st.write(f"Relevance: {item['relevance_score']:.2f}")
-            st.write(f"DScore: {item['dynamic_score']:.3f}")
-
-    st.subheader("📦 Full Catalog Pool")
-    st.dataframe(df)
-else:
-    st.info("Choose a category and click Run Simulation.")
+st.subheader("Selected Items (Top 6 Ranked Across All Categories)")
+st.write(top6[["item_id", "category", "final_score"]])
