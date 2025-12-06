@@ -8,7 +8,7 @@ Original file is located at
 """
 
 # -*- coding: utf-8 -*-
-"""streamlit_app - simplified, no matplotlib"""
+"""streamlit_app - simple table output"""
 
 import streamlit as st
 import pandas as pd
@@ -19,7 +19,7 @@ from collections import Counter
 st.set_page_config(layout="wide", page_title="6-Slot Module Simulation — Category-aware")
 
 # -------------------------
-# Embedded "optimal" weights per category
+# Embedded optimal weights per category
 CATEGORY_WEIGHTS = {
     "Collectibles": {"relevance": 0.55, "diversity": 0.30, "freshness": 0.40, "monetization": 0.25},
     "Electronics":  {"relevance": 0.75, "diversity": 0.10, "freshness": 0.35, "monetization": 0.40},
@@ -120,74 +120,33 @@ def simulate_module(df_pool, global_weights, max_sponsored=2, use_category_bias=
 # -------------------------
 # Streamlit UI
 st.title("6-Slot Module Simulation — Category-aware")
-st.markdown("Simulates 6 slots with category-aware scoring and optional global weights.")
 
-left_col, mid_col, right_col = st.columns([1,2,2])
+# Controls
+num_items = st.number_input("Product pool size", 30, 500, 120, 10)
+max_sponsored = st.slider("Max sponsored slots", 0, 6, 2)
+seed = st.number_input("Random seed", 0, 9999, 42)
+use_cat_bias = st.checkbox("Use category optimal bias", True)
 
-# -------------------------
-# Left: controls
-with left_col:
-    st.header("Controls")
-    num_items = st.number_input("Product pool size", 30, 500, 120, 10)
-    max_sponsored = st.slider("Max sponsored slots", 0, 6, 2)
-    seed = st.number_input("Random seed", 0, 9999, 42)
-    use_cat_bias = st.checkbox("Use category optimal bias", True)
+st.subheader("Global weight sliders")
+global_weights = {
+    "relevance": st.slider("Relevance", 0.0, 1.0, 0.30),
+    "personalization": st.slider("Personalization", 0.0, 1.0, 0.25),
+    "quality": st.slider("Quality", 0.0, 1.0, 0.15),
+    "popularity": st.slider("Popularity", 0.0, 1.0, 0.10),
+    "seller_health": st.slider("Seller Health", 0.0, 1.0, 0.10),
+    "freshness": st.slider("Freshness", 0.0, 1.0, 0.05),
+    "sponsored_bonus": st.slider("Sponsored Bonus", 0.0, 0.5, 0.12)
+}
 
-    st.subheader("Global weight sliders")
-    global_weights = {
-        "relevance": st.slider("Relevance", 0.0, 1.0, 0.30),
-        "personalization": st.slider("Personalization", 0.0, 1.0, 0.25),
-        "quality": st.slider("Quality", 0.0, 1.0, 0.15),
-        "popularity": st.slider("Popularity", 0.0, 1.0, 0.10),
-        "seller_health": st.slider("Seller Health", 0.0, 1.0, 0.10),
-        "freshness": st.slider("Freshness", 0.0, 1.0, 0.05),
-        "sponsored_bonus": st.slider("Sponsored Bonus", 0.0, 0.5, 0.12)
-    }
+if st.button("Run Simulation"):
+    df_pool = generate_products(num_items, seed)
+    selected_df = simulate_module(df_pool, global_weights, max_sponsored, use_cat_bias)
 
-    if st.button("Run Simulation"):
-        df_pool = generate_products(num_items, seed)
-        selected_df = simulate_module(df_pool, global_weights, max_sponsored, use_cat_bias)
+    st.subheader("Category optimal values (all categories)")
+    st.dataframe(pd.DataFrame(CATEGORY_WEIGHTS).T)
 
-        st.subheader("Selected 6-slot module")
-        cols = st.columns(6)
-        for i, (_, row) in enumerate(selected_df.iterrows()):
-            with cols[i]:
-                st.markdown(f"### Slot {i+1}")
-                st.write(f"**{row['name']}**")
-                st.write(f"Category: {row['category']}")
-                st.write(f"Sponsored: {'Yes' if row['sponsored']==1 else 'No'}")
-                st.write(f"Price band: {row['price_band']}")
-                st.write(f"Dynamic score: {row['dynamic_score']:.3f}")
+    st.subheader("Selected 6-slot items")
+    st.dataframe(selected_df[['item_id','name','category','sponsored','price_band','dynamic_score']])
 
-        st.markdown("---")
-        st.subheader("Category optimal profiles")
-        st.bar_chart(pd.DataFrame(CATEGORY_WEIGHTS).T)
-
-        st.subheader("Slot category distribution")
-        slot_counts = Counter(selected_df['category'])
-        st.bar_chart(pd.DataFrame(list(slot_counts.items()), columns=['Category','Count']).set_index('Category'))
-
-        st.subheader("Full candidate pool (partial view)")
-        st.dataframe(df_pool.sample(min(50,len(df_pool)), random_state=seed))
-
-# -------------------------
-# Right: quick sensitivity simulation
-with right_col:
-    st.header("Quick category focus")
-    focus_cat = st.selectbox("Temporarily boost a category", [None] + ALL_CATEGORIES)
-    boost_amount = st.slider("Boost amount (additive to relevance)", 0.0, 0.5, 0.12)
-
-    if st.button("Run focused simulation"):
-        df_pool = generate_products(120, seed)
-        if focus_cat:
-            df_pool.loc[df_pool['category']==focus_cat,'relevance_score'] = (
-                df_pool.loc[df_pool['category']==focus_cat,'relevance_score'] + boost_amount
-            ).clip(0,1)
-
-        selected_df = simulate_module(df_pool, global_weights, max_sponsored, use_cat_bias)
-        st.subheader("Focused run - category counts")
-        st.bar_chart(pd.DataFrame(Counter(selected_df['category']).items(), columns=['Category','Count']).set_index('Category'))
-        st.subheader("Selected items (focused run)")
-        st.dataframe(selected_df[['name','category','dynamic_score']])
-
-st.caption("Category priors simulation for 6-slot module. Adjust sliders to explore outcomes.")
+    st.subheader("Full candidate pool (partial view)")
+    st.dataframe(df_pool.sample(min(50,len(df_pool)), random_state=seed))
