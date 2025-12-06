@@ -7,20 +7,27 @@ Original file is located at
     https://colab.research.google.com/drive/1nTsOtwBNrN7yw0pDzG1ZV-A0naPGLZps
 """
 
+# -*- coding: utf-8 -*-
+"""streamlit_app"""
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import random
-import matplotlib.pyplot as plt
 from collections import Counter
+
+# Try importing matplotlib; if unavailable, disable plotting
+try:
+    import matplotlib.pyplot as plt
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
+    st.warning("matplotlib not found — radar plots will be disabled.")
 
 st.set_page_config(layout="wide", page_title="6-Slot Module Simulation — Category-aware")
 
 # -------------------------
 # Embedded "optimal" weights per category (for intuition)
-# Each category has target weights for: relevance, diversity, freshness, monetization
-# Values are between 0 and 1 and sum do not have to equal 1 — they are relative priorities.
-# -------------------------
 CATEGORY_WEIGHTS = {
     "Collectibles": {"relevance": 0.55, "diversity": 0.30, "freshness": 0.40, "monetization": 0.25},
     "Electronics":  {"relevance": 0.75, "diversity": 0.10, "freshness": 0.35, "monetization": 0.40},
@@ -33,7 +40,8 @@ CATEGORY_WEIGHTS = {
 
 ALL_CATEGORIES = list(CATEGORY_WEIGHTS.keys())
 
-# Utility: generate a realistic-ish mock product pool
+# -------------------------
+# Utility: generate mock product pool
 @st.cache_data
 def generate_products(n=80, seed=42):
     random.seed(seed)
@@ -41,14 +49,12 @@ def generate_products(n=80, seed=42):
     products = []
     price_bands = ["Low", "Mid", "High"]
 
-    # distribute roughly across categories
     for i in range(n):
         cat = random.choice(ALL_CATEGORIES)
         products.append({
             "item_id": f"{cat[:3].upper()}_{i+1}",
             "name": f"{cat} Item {i+1}",
             "category": cat,
-            # base signals sample
             "relevance_score": np.clip(np.random.normal(0.6, 0.18), 0, 1),
             "recommendation_score": np.clip(np.random.normal(0.5, 0.2), 0, 1),
             "quality_score": np.clip(np.random.normal(0.6, 0.2), 0, 1),
@@ -60,9 +66,9 @@ def generate_products(n=80, seed=42):
         })
     return pd.DataFrame(products)
 
-# Core dynamic scoring function — uses global weights and also optionally the category "optimal" profile
+# -------------------------
+# Dynamic scoring function
 def compute_dynamic_score(row, global_weights, used_subcats, slot_idx, current_sponsored, max_sponsored, use_category_bias=True):
-    # base linear combination
     base = (
         row["relevance_score"] * global_weights["relevance"] +
         row["recommendation_score"] * global_weights["personalization"] +
@@ -72,55 +78,49 @@ def compute_dynamic_score(row, global_weights, used_subcats, slot_idx, current_s
         row["freshness_score"] * global_weights["freshness"]
     )
 
-    # apply category bias (optional) — nudges item scores toward that category's optimal strategy
     if use_category_bias:
         cat = row["category"]
         cat_profile = CATEGORY_WEIGHTS.get(cat, None)
-        if cat_profile is not None:
-            # compute how aligned this item is with the category priorities
-            # stronger alignment if item has high signal in category-important dimensions
+        if cat_profile:
             align = (
                 row["relevance_score"] * cat_profile["relevance"] +
                 row["freshness_score"] * cat_profile["freshness"] +
                 row["popularity_score"] * (cat_profile["monetization"] * 0.8) +
                 (1.0 - row["popularity_score"]) * (cat_profile["diversity"] * 0.6)
             )
-            # normalization
             base = 0.85 * base + 0.15 * align
 
-    # diversity penalty: penalize repeated subcategories (here we use category as subcat proxy)
+    # diversity penalty
     if row["category"] in used_subcats:
         base -= 0.12 * used_subcats[row["category"]]
 
-    # exploration boost on slot 4 (indexing 1..6)
+    # exploration boost on slot 4
     if slot_idx == 4:
         base += 0.12 * row["freshness_score"]
 
-    # sponsored bonus if allowed
+    # sponsored bonus
     if row["sponsored"] == 1 and current_sponsored < max_sponsored:
         base += global_weights.get("sponsored_bonus", 0.12)
 
     return base
 
-# Simulation loop: fill 6 positions
+# -------------------------
+# Simulation: fill 6 slots
 def simulate_module(df_pool, global_weights, max_sponsored=2, use_category_bias=True):
     pool = df_pool.copy().reset_index(drop=True)
     selected = []
     used_subcats = {}
     current_sponsored = 0
 
-    for slot in range(1, 7):
+    for slot in range(1,7):
         pool["dynamic_score"] = pool.apply(
             lambda r: compute_dynamic_score(r, global_weights, used_subcats, slot, current_sponsored, max_sponsored, use_category_bias),
             axis=1
         )
-
-        # pick best available candidate
         best_idx = pool["dynamic_score"].idxmax()
         best_row = pool.loc[best_idx]
         selected.append(best_row)
 
-        # update state
         cat = best_row["category"]
         used_subcats[cat] = used_subcats.get(cat, 0) + 1
         if best_row["sponsored"] == 1:
@@ -128,35 +128,29 @@ def simulate_module(df_pool, global_weights, max_sponsored=2, use_category_bias=
 
         pool = pool.drop(index=best_idx).reset_index(drop=True)
 
-    selected_df = pd.DataFrame(selected).reset_index(drop=True)
-    return selected_df
+    return pd.DataFrame(selected).reset_index(drop=True)
 
 # -------------------------
 # Streamlit UI
-# -------------------------
 st.title("6-Slot Horizontal Product Module — Category-aware Simulation")
-st.markdown(
-    """
-    This app simulates a 6-position module where items from multiple categories compete for positions.
-    The script embeds *category-level optimal priorities* (relevance, diversity, freshness, monetization).
+st.markdown("""
+Simulates a 6-position module where items from multiple categories compete.
+Category-level priorities (relevance, diversity, freshness, monetization) are embedded.
+""")
 
-    Use the controls to change global weights, allow/disallow category bias, and observe how selected
-    slot composition and scores change. Visualizations show the built-in category profiles and the
-    final selected distribution.
-    """
-)
-
-# Left column: controls
 left_col, mid_col, right_col = st.columns([1,2,2])
+
+# -------------------------
+# Left: controls
 with left_col:
     st.header("Controls")
     num_items = st.number_input("Product pool size", min_value=30, max_value=500, value=120, step=10)
-    max_sponsored = st.slider("Max sponsored slots", min_value=0, max_value=6, value=2)
-    seed = st.number_input("Random seed", min_value=0, max_value=9999, value=42)
-    use_cat_bias = st.checkbox("Use category optimal bias (embedded)", value=True)
+    max_sponsored = st.slider("Max sponsored slots", 0, 6, 2)
+    seed = st.number_input("Random seed", 0, 9999, 42)
+    use_cat_bias = st.checkbox("Use category optimal bias", True)
 
     st.markdown("---")
-    st.subheader("Global weight sliders (base blending)")
+    st.subheader("Global weight sliders")
     global_weights = {
         "relevance": st.slider("Relevance", 0.0, 1.0, 0.30),
         "personalization": st.slider("Personalization", 0.0, 1.0, 0.25),
@@ -167,12 +161,11 @@ with left_col:
         "sponsored_bonus": st.slider("Sponsored Bonus", 0.0, 0.5, 0.12)
     }
     st.markdown("---")
+
     if st.button("Run Simulation"):
-        # generate pool and run
         df_pool = generate_products(num_items, seed)
         selected_df = simulate_module(df_pool, global_weights, max_sponsored, use_cat_bias)
 
-        # show selected slots horizontally
         st.subheader("Selected 6-slot module")
         cols = st.columns(6)
         for i, (_, row) in enumerate(selected_df.iterrows()):
@@ -187,9 +180,8 @@ with left_col:
                 st.write(f"Popularity: {row['popularity_score']:.2f}")
                 st.write(f"Dynamic score: {row['dynamic_score']:.3f}")
 
-        # visualizations: category profile bar chart, slot category distribution, score breakdown
         st.markdown("---")
-        st.subheader("Category optimal profiles (embedded in the model)")
+        st.subheader("Category optimal profiles")
         cat_df = pd.DataFrame(CATEGORY_WEIGHTS).T.reset_index().rename(columns={"index":"Category"})
         st.bar_chart(cat_df.set_index('Category'))
 
@@ -204,58 +196,50 @@ with left_col:
         st.subheader("Full candidate pool (partial view)")
         st.dataframe(df_pool.sample(min(50, len(df_pool)), random_state=seed))
 
-# Middle column: show embedded optimal values explanation and visual
+# -------------------------
+# Mid: category explanation & radar (optional)
 with mid_col:
-    st.header("What do the embedded optimal values mean?")
-    st.markdown(
-        """
-        - **Relevance**: how tightly this category benefits from matching explicit user intent. Higher means we prioritize intent-match.
-        - **Diversity**: how important it is to show varied subtypes within the category (helps discovery). Higher means more penalty for repeats.
-        - **Freshness**: importance of surfacing new arrivals / recent items (higher for grocery, makeup trends, toys releases).
-        - **Monetization**: categories where revenue or sponsored placements are more important (e.g., vehicles/electronics).
+    st.header("Category Optimal Values Explained")
+    st.markdown("""
+- **Relevance**: matching user intent
+- **Diversity**: varied subtypes
+- **Freshness**: new arrivals
+- **Monetization**: revenue importance
+""")
 
-        These are *heuristic* priors encoded to bias selection; they are not absolute rules. In practice you'd A/B test these.
-        """
-    )
+    if MATPLOTLIB_AVAILABLE:
+        st.subheader("Category priority radar")
+        fig = plt.figure(figsize=(6,4))
+        categories = list(CATEGORY_WEIGHTS.keys())
+        signals = ["relevance","diversity","freshness","monetization"]
+        ax = fig.add_subplot(111)
+        for cat in categories:
+            vals = [CATEGORY_WEIGHTS[cat][s] for s in signals]
+            ax.plot(signals, vals, marker='o', label=cat)
+        ax.set_ylim(0,1)
+        ax.set_title('Category priority signals')
+        ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.05))
+        st.pyplot(fig)
 
-    st.markdown("---")
-    st.subheader("Category priority radar (visual intuition)")
-    # radar-like visualization using matplotlib polar
-    fig = plt.figure(figsize=(6,4))
-    categories = list(CATEGORY_WEIGHTS.keys())
-    signals = ["relevance","diversity","freshness","monetization"]
-
-    # plot each category as a line
-    ax = fig.add_subplot(111)
-    for cat in categories:
-        vals = [CATEGORY_WEIGHTS[cat][s] for s in signals]
-        ax.plot(signals, vals, marker='o', label=cat)
-
-    ax.set_ylim(0,1)
-    ax.set_title('Category priority signals (line view)')
-    ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.05))
-    st.pyplot(fig)
-
-# Right column: show pool and quick sensitivity simulation
+# -------------------------
+# Right: sensitivity simulation
 with right_col:
-    st.header("Quick sensitivity: simulate by category focus")
-    focus_cat = st.selectbox("Temporarily boost a category (simulated)", [None] + ALL_CATEGORIES)
+    st.header("Quick category focus")
+    focus_cat = st.selectbox("Temporarily boost a category", [None] + ALL_CATEGORIES)
     boost_amount = st.slider("Boost amount (additive to relevance)", 0.0, 0.5, 0.12)
 
     if st.button("Run focused simulation"):
         df_pool = generate_products(120, seed)
-        # create a copy of global weights and bias relevance for focused category
         gw = global_weights.copy()
         if focus_cat:
-            # increase relevance weight for items in focus category by boosting their relevance signal
             df_pool.loc[df_pool['category']==focus_cat,'relevance_score'] = (
                 df_pool.loc[df_pool['category']==focus_cat,'relevance_score'] + boost_amount
             ).clip(0,1)
 
         selected_df = simulate_module(df_pool, gw, max_sponsored, use_cat_bias)
-        st.subheader("Focused run - selected category counts")
+        st.subheader("Focused run - category counts")
         st.bar_chart(pd.DataFrame(Counter(selected_df['category']).items(), columns=['Category','Count']).set_index('Category'))
         st.subheader("Selected items (focused run)")
         st.write(selected_df[['name','category','dynamic_score']])
 
-st.caption("Script embeds category priors you asked for, simulates competition across categories for 6 slots, and visualizes outcomes. Tune sliders to build intuition.")
+st.caption("Category priors simulation for 6-slot horizontal module. Adjust sliders to explore outcomes.")
