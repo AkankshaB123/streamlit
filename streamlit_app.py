@@ -8,166 +8,155 @@ Original file is located at
 """
 
 import streamlit as st
-
-import streamlit as st
 import pandas as pd
 import numpy as np
 import random
 
-st.set_page_config(layout="wide", page_title="Horizontal Module Simulation")
+st.set_page_config(layout="wide", page_title="Product Module Simulation")
 
 # -------------------------------------------------------------------------
-# Fixed e-commerce categories
+# Category-specific Optimal Weight Profiles
 # -------------------------------------------------------------------------
-CATEGORY_MAP = {
-    "Collectibles": ["Trading Cards", "Comics", "Vintage", "Memorabilia"],
-    "Electronics": ["Audio", "Mobile", "Computers", "Wearables"],
-    "Toys": ["LEGO", "Action Figures", "Dolls", "STEM Toys"],
-    "Makeup": ["Lips", "Face", "Eyes", "Skincare"]
+CATEGORY_WEIGHTS = {
+    "Collectibles":     {"relevance":0.35, "diversity":0.30, "freshness":0.20, "monetization":0.15},
+    "Electronics":      {"relevance":0.45, "diversity":0.15, "freshness":0.10, "monetization":0.30},
+    "Toys":             {"relevance":0.30, "diversity":0.25, "freshness":0.30, "monetization":0.15},
+    "Makeup / Beauty":  {"relevance":0.40, "diversity":0.20, "freshness":0.25, "monetization":0.15}
 }
 
-PRICE_BANDS = ["Low", "Mid", "High"]
+# -------------------------------------------------------------------------
+# Mock Data Generator
+# -------------------------------------------------------------------------
+def generate_mock_products(n, category):
+    names = {
+        "Collectibles": [
+            "Pokemon Booster Pack", "Vintage Comic Book", "Signed Baseball", 
+            "Funkopop Exclusive", "Retro Trading Card"
+        ],
+        "Electronics": [
+            "Apple AirPods Pro", "Samsung Galaxy Watch", "Sony WH1000XM5 Headphones",
+            "Lenovo ThinkPad X1", "iPad Mini"
+        ],
+        "Toys": [
+            "Lego Star Wars Set", "Barbie Dream House", "Hot Wheels Track Builder",
+            "Nerf Elite Blaster", "Pokemon Plush"
+        ],
+        "Makeup / Beauty": [
+            "Fenty Gloss Bomb", "Charlotte Tilbury Pillow Talk Trio", 
+            "Rare Beauty Lip Oil", "Dior Lip Glow", "Huda Beauty Palette"
+        ]
+    }
 
-# -------------------------------------------------------------------------
-# Generate mock product dataset
-# -------------------------------------------------------------------------
-def generate_products(n=60):
-    rows = []
+    price_bands = ["Low", "Mid", "High"]
+
+    data = []
     for i in range(n):
-        cat = random.choice(list(CATEGORY_MAP.keys()))
-        subcat = random.choice(CATEGORY_MAP[cat])
-
-        rows.append({
+        data.append({
             "item_id": f"ITEM_{i+1}",
-            "name": f"{cat} - {subcat} Item {i+1}",
-            "category": cat,
-            "subcat": subcat,
-            "price_band": random.choice(PRICE_BANDS),
-
-            # Scoring signals
+            "name": random.choice(names[category]),
             "relevance_score": random.uniform(0.4, 1.0),
-            "recommendation_score": random.uniform(0.3, 1.0),
+            "recommendation_score": random.uniform(0.4, 1.0),
             "quality_score": random.uniform(0.4, 1.0),
-            "popularity_score": random.uniform(0.3, 1.0),
-            "seller_health": random.uniform(0.2, 1.0),
-            "freshness_score": random.uniform(0.1, 1.0),
-
-            # Sponsored 20% chance
-            "sponsored": random.choice([0, 0, 0, 1])
+            "popularity_score": random.uniform(0.4, 1.0),
+            "seller_health": random.uniform(0.4, 1.0),
+            "freshness_score": random.uniform(0.3, 1.0),
+            "sponsored": random.choice([0,0,0,1]),  # 25% sponsored
+            "subcat": random.choice(["Premium", "Budget", "Collector", "Classic", "Trending"]),
+            "price_band": random.choice(price_bands)
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(data)
 
 # -------------------------------------------------------------------------
-# Dynamic scoring
+# Scoring Function
 # -------------------------------------------------------------------------
-def compute_dynamic_score(row, used_cats, used_subcats, slot_idx, weights, current_sponsored, max_sponsored):
-
+def compute_score(row, used_subcats, weights, current_sponsored, max_sponsored):
     score = (
-        row["relevance_score"]        * weights["relevance"] +
-        row["recommendation_score"]   * weights["personalization"] +
-        row["quality_score"]          * weights["quality"] +
-        row["popularity_score"]       * weights["popularity"] +
-        row["seller_health"]          * weights["seller_health"] +
-        row["freshness_score"]        * weights["freshness"]
+        row["relevance_score"]      * weights["relevance"] +
+        row["freshness_score"]      * weights["freshness"] +
+        row["popularity_score"]     * 0.10 +
+        row["quality_score"]        * 0.10 +
+        row["seller_health"]        * 0.10
     )
 
-    # Category diversity penalty
-    if row["category"] in used_cats:
-        score -= 0.12 * used_cats[row["category"]]
-
-    # Subcategory diversity penalty
+    # Diversity penalty
     if row["subcat"] in used_subcats:
-        score -= 0.10 * used_subcats[row["subcat"]]
+        score -= weights["diversity"] * used_subcats[row["subcat"]]
 
-    # Sponsored logic
+    # Sponsored bonus
     if row["sponsored"] == 1 and current_sponsored < max_sponsored:
-        score += weights["sponsored_bonus"]
-
-    # Slot 4 = exploration slot
-    if slot_idx == 4:
-        score += 0.18 * row["freshness_score"]
+        score += weights["monetization"]
 
     return score
 
 # -------------------------------------------------------------------------
-# Simulation loop
+# Simulation Loop (6 Slots)
 # -------------------------------------------------------------------------
-def run_simulation(df, weights, max_sponsored):
-
+def simulate_selection(df, weights, max_sponsored=2):
     df = df.copy()
     selected = []
-
-    used_cats = {}
     used_subcats = {}
     current_sponsored = 0
 
-    for slot in range(1, 7):
+    for _ in range(6):
         df["dynamic_score"] = df.apply(
-            lambda r: compute_dynamic_score(
-                r, used_cats, used_subcats,
-                slot, weights,
-                current_sponsored, max_sponsored
-            ),
+            lambda row: compute_score(
+                row, 
+                used_subcats, 
+                weights,
+                current_sponsored, 
+                max_sponsored
+            ), 
             axis=1
         )
 
-        best = df.sort_values("dynamic_score", ascending=False).iloc[0]
-        selected.append(best)
+        best_item = df.sort_values("dynamic_score", ascending=False).iloc[0]
+        selected.append(best_item)
 
-        # update memory
-        cat = best["category"]
-        subcat = best["subcat"]
-        used_cats[cat] = used_cats.get(cat, 0) + 1
+        subcat = best_item["subcat"]
         used_subcats[subcat] = used_subcats.get(subcat, 0) + 1
-
-        if best["sponsored"] == 1:
+        if best_item["sponsored"] == 1:
             current_sponsored += 1
 
-        df = df[df["item_id"] != best["item_id"]]
+        df = df[df["item_id"] != best_item["item_id"]]
 
     return selected
 
 # -------------------------------------------------------------------------
 # UI
 # -------------------------------------------------------------------------
-st.title("🛒 6-Slot Horizontal Product Module Simulation (e-commerce categories)")
+st.title("🛒 E-Commerce 6-Slot Horizontal Module Simulation")
 
-st.sidebar.header("Weight Adjustments")
-weights = {
-    "relevance":       st.sidebar.slider("Relevance Weight",       0.0, 1.0, 0.30),
-    "personalization": st.sidebar.slider("Personalization Weight", 0.0, 1.0, 0.25),
-    "quality":         st.sidebar.slider("Quality Weight",         0.0, 1.0, 0.15),
-    "popularity":      st.sidebar.slider("Popularity Weight",      0.0, 1.0, 0.10),
-    "seller_health":   st.sidebar.slider("Seller Health Weight",   0.0, 1.0, 0.10),
-    "freshness":       st.sidebar.slider("Freshness Weight",       0.0, 1.0, 0.05),
-    "sponsored_bonus": st.sidebar.slider("Sponsored Bonus",        0.0, 1.0, 0.15),
-}
+category = st.sidebar.selectbox(
+    "Choose Category",
+    ["Collectibles", "Electronics", "Toys", "Makeup / Beauty"]
+)
 
-max_sponsored = st.sidebar.number_input("Max Sponsored Items", 0, 6, 2)
-pool_size = st.sidebar.number_input("Candidate Pool Size", 20, 200, 60)
+st.sidebar.write("### Optimal Embedded Weights")
+optimal = CATEGORY_WEIGHTS[category]
+st.sidebar.write(optimal)
 
-df = generate_products(pool_size)
+num_products = st.sidebar.number_input("Number of Products", 10, 100, 40)
+max_sponsored = st.sidebar.slider("Max Sponsored Slots", 0, 6, 2)
+
+df = generate_mock_products(num_products, category)
 
 if st.sidebar.button("Run Simulation"):
+    selected = simulate_selection(df, optimal, max_sponsored)
 
-    picks = run_simulation(df, weights, max_sponsored)
-
-    st.subheader("🟦 Final 6-Item Horizontal Module")
+    st.subheader("🎯 Final 6 Recommended Items")
     cols = st.columns(6)
 
-    for i, item in enumerate(picks):
+    for i, item in enumerate(selected):
         with cols[i]:
             st.markdown(f"### Slot {i+1}")
             st.write(f"**{item['name']}**")
-            st.write(f"Category: {item['category']}")
             st.write(f"Subcat: {item['subcat']}")
-            st.write(f"Price Band: {item['price_band']}")
             st.write(f"Sponsored: {'Yes' if item['sponsored'] else 'No'}")
-            st.write(f"Score: {item['dynamic_score']:.3f}")
+            st.write(f"Freshness: {item['freshness_score']:.2f}")
+            st.write(f"Relevance: {item['relevance_score']:.2f}")
+            st.write(f"DScore: {item['dynamic_score']:.3f}")
 
-    st.markdown("---")
-    st.subheader("📦 Full Candidate Pool")
+    st.subheader("📦 Full Catalog Pool")
     st.dataframe(df)
-
 else:
-    st.info("Click **Run Simulation** to generate the 6-slot module.")
+    st.info("Choose a category and click Run Simulation.")
