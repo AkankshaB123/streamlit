@@ -10,71 +10,252 @@ Original file is located at
 import streamlit as st
 import pandas as pd
 import numpy as np
+import random
+import matplotlib.pyplot as plt
+from collections import Counter
 
-st.title("E-commerce Item Selection Simulation")
-st.subheader("All categories compete for the 6-slot product module")
+st.set_page_config(layout="wide", page_title="6-Slot Module Simulation — Category-aware")
 
-# -----------------------------
-# Category optimal weights
-# (intuition-building)
-# -----------------------------
-category_weights = {
-    "Collectibles":  {"relevance": 0.55, "diversity": 0.30, "freshness": 0.40, "monetization": 0.25},
-    "Electronics":   {"relevance": 0.75, "diversity": 0.10, "freshness": 0.35, "monetization": 0.40},
-    "Toys":          {"relevance": 0.60, "diversity": 0.25, "freshness": 0.45, "monetization": 0.20},
-    "Makeup":        {"relevance": 0.65, "diversity": 0.20, "freshness": 0.50, "monetization": 0.30},
+# -------------------------
+# Embedded "optimal" weights per category (for intuition)
+# Each category has target weights for: relevance, diversity, freshness, monetization
+# Values are between 0 and 1 and sum do not have to equal 1 — they are relative priorities.
+# -------------------------
+CATEGORY_WEIGHTS = {
+    "Collectibles": {"relevance": 0.55, "diversity": 0.30, "freshness": 0.40, "monetization": 0.25},
+    "Electronics":  {"relevance": 0.75, "diversity": 0.10, "freshness": 0.35, "monetization": 0.40},
+    "Toys":         {"relevance": 0.60, "diversity": 0.25, "freshness": 0.45, "monetization": 0.20},
+    "Makeup":       {"relevance": 0.65, "diversity": 0.20, "freshness": 0.50, "monetization": 0.30},
+    "Grocery":      {"relevance": 0.70, "diversity": 0.15, "freshness": 0.70, "monetization": 0.35},
+    "Motorcycle":   {"relevance": 0.80, "diversity": 0.05, "freshness": 0.30, "monetization": 0.50},
+    "Cars":         {"relevance": 0.85, "diversity": 0.05, "freshness": 0.25, "monetization": 0.60},
 }
 
-# Display optimal values
-with st.expander("Optimal Values per Category (intuition)"):
-    st.write(pd.DataFrame(category_weights).T)
+ALL_CATEGORIES = list(CATEGORY_WEIGHTS.keys())
 
-# -----------------------------
-# Create sample item inventory
-# -----------------------------
-np.random.seed(42)
+# Utility: generate a realistic-ish mock product pool
+@st.cache_data
+def generate_products(n=80, seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    products = []
+    price_bands = ["Low", "Mid", "High"]
 
-items = []
-categories = list(category_weights.keys())
-
-for cat in categories:
-    for i in range(10):
-        items.append({
-            "item_id": f"{cat[:3]}_{i}",
+    # distribute roughly across categories
+    for i in range(n):
+        cat = random.choice(ALL_CATEGORIES)
+        products.append({
+            "item_id": f"{cat[:3].upper()}_{i+1}",
+            "name": f"{cat} Item {i+1}",
             "category": cat,
-            "relevance": np.random.uniform(0.4, 0.95),
-            "diversity_signal": np.random.uniform(0.1, 0.9),
-            "freshness": np.random.uniform(0.2, 0.95),
-            "monetization": np.random.uniform(0.1, 0.95),
+            # base signals sample
+            "relevance_score": np.clip(np.random.normal(0.6, 0.18), 0, 1),
+            "recommendation_score": np.clip(np.random.normal(0.5, 0.2), 0, 1),
+            "quality_score": np.clip(np.random.normal(0.6, 0.2), 0, 1),
+            "popularity_score": np.clip(np.random.beta(2,5), 0, 1),
+            "seller_health": np.clip(np.random.normal(0.75, 0.15), 0, 1),
+            "freshness_score": np.clip(np.random.exponential(0.6), 0, 1),
+            "sponsored": random.choices([0,1], weights=[0.8,0.2])[0],
+            "price_band": random.choice(price_bands)
         })
+    return pd.DataFrame(products)
 
-df = pd.DataFrame(items)
-
-st.subheader("Global Weight Controls (applied to final scoring)")
-rel = st.slider("Relevance Weight", 0.0, 1.0, 0.5)
-div = st.slider("Diversity Weight", 0.0, 1.0, 0.2)
-fre = st.slider("Freshness Weight", 0.0, 1.0, 0.3)
-mon = st.slider("Monetization Weight", 0.0, 1.0, 0.3)
-
-# -----------------------------------
-# Compute final global score
-# -----------------------------------
-def score(row):
-    cat = row["category"]
-    catw = category_weights[cat]
-    
-    # Combine item signals with category-specific intuition
-    return (
-        row["relevance"]     * rel * catw["relevance"] +
-        row["diversity_signal"] * div * catw["diversity"] +
-        row["freshness"]     * fre * catw["freshness"] +
-        row["monetization"]  * mon * catw["monetization"]
+# Core dynamic scoring function — uses global weights and also optionally the category "optimal" profile
+def compute_dynamic_score(row, global_weights, used_subcats, slot_idx, current_sponsored, max_sponsored, use_category_bias=True):
+    # base linear combination
+    base = (
+        row["relevance_score"] * global_weights["relevance"] +
+        row["recommendation_score"] * global_weights["personalization"] +
+        row["quality_score"] * global_weights["quality"] +
+        row["popularity_score"] * global_weights["popularity"] +
+        row["seller_health"] * global_weights["seller_health"] +
+        row["freshness_score"] * global_weights["freshness"]
     )
 
-df["final_score"] = df.apply(score, axis=1)
+    # apply category bias (optional) — nudges item scores toward that category's optimal strategy
+    if use_category_bias:
+        cat = row["category"]
+        cat_profile = CATEGORY_WEIGHTS.get(cat, None)
+        if cat_profile is not None:
+            # compute how aligned this item is with the category priorities
+            # stronger alignment if item has high signal in category-important dimensions
+            align = (
+                row["relevance_score"] * cat_profile["relevance"] +
+                row["freshness_score"] * cat_profile["freshness"] +
+                row["popularity_score"] * (cat_profile["monetization"] * 0.8) +
+                (1.0 - row["popularity_score"]) * (cat_profile["diversity"] * 0.6)
+            )
+            # normalization
+            base = 0.85 * base + 0.15 * align
 
-# Pick top 6 competing items
-top6 = df.sort_values("final_score", ascending=False).head(6)
+    # diversity penalty: penalize repeated subcategories (here we use category as subcat proxy)
+    if row["category"] in used_subcats:
+        base -= 0.12 * used_subcats[row["category"]]
 
-st.subheader("Selected Items (Top 6 Ranked Across All Categories)")
-st.write(top6[["item_id", "category", "final_score"]])
+    # exploration boost on slot 4 (indexing 1..6)
+    if slot_idx == 4:
+        base += 0.12 * row["freshness_score"]
+
+    # sponsored bonus if allowed
+    if row["sponsored"] == 1 and current_sponsored < max_sponsored:
+        base += global_weights.get("sponsored_bonus", 0.12)
+
+    return base
+
+# Simulation loop: fill 6 positions
+def simulate_module(df_pool, global_weights, max_sponsored=2, use_category_bias=True):
+    pool = df_pool.copy().reset_index(drop=True)
+    selected = []
+    used_subcats = {}
+    current_sponsored = 0
+
+    for slot in range(1, 7):
+        pool["dynamic_score"] = pool.apply(
+            lambda r: compute_dynamic_score(r, global_weights, used_subcats, slot, current_sponsored, max_sponsored, use_category_bias),
+            axis=1
+        )
+
+        # pick best available candidate
+        best_idx = pool["dynamic_score"].idxmax()
+        best_row = pool.loc[best_idx]
+        selected.append(best_row)
+
+        # update state
+        cat = best_row["category"]
+        used_subcats[cat] = used_subcats.get(cat, 0) + 1
+        if best_row["sponsored"] == 1:
+            current_sponsored += 1
+
+        pool = pool.drop(index=best_idx).reset_index(drop=True)
+
+    selected_df = pd.DataFrame(selected).reset_index(drop=True)
+    return selected_df
+
+# -------------------------
+# Streamlit UI
+# -------------------------
+st.title("6-Slot Horizontal Product Module — Category-aware Simulation")
+st.markdown(
+    """
+    This app simulates a 6-position module where items from multiple categories compete for positions.
+    The script embeds *category-level optimal priorities* (relevance, diversity, freshness, monetization).
+
+    Use the controls to change global weights, allow/disallow category bias, and observe how selected
+    slot composition and scores change. Visualizations show the built-in category profiles and the
+    final selected distribution.
+    """
+)
+
+# Left column: controls
+left_col, mid_col, right_col = st.columns([1,2,2])
+with left_col:
+    st.header("Controls")
+    num_items = st.number_input("Product pool size", min_value=30, max_value=500, value=120, step=10)
+    max_sponsored = st.slider("Max sponsored slots", min_value=0, max_value=6, value=2)
+    seed = st.number_input("Random seed", min_value=0, max_value=9999, value=42)
+    use_cat_bias = st.checkbox("Use category optimal bias (embedded)", value=True)
+
+    st.markdown("---")
+    st.subheader("Global weight sliders (base blending)")
+    global_weights = {
+        "relevance": st.slider("Relevance", 0.0, 1.0, 0.30),
+        "personalization": st.slider("Personalization", 0.0, 1.0, 0.25),
+        "quality": st.slider("Quality", 0.0, 1.0, 0.15),
+        "popularity": st.slider("Popularity", 0.0, 1.0, 0.10),
+        "seller_health": st.slider("Seller Health", 0.0, 1.0, 0.10),
+        "freshness": st.slider("Freshness", 0.0, 1.0, 0.05),
+        "sponsored_bonus": st.slider("Sponsored Bonus", 0.0, 0.5, 0.12)
+    }
+    st.markdown("---")
+    if st.button("Run Simulation"):
+        # generate pool and run
+        df_pool = generate_products(num_items, seed)
+        selected_df = simulate_module(df_pool, global_weights, max_sponsored, use_cat_bias)
+
+        # show selected slots horizontally
+        st.subheader("Selected 6-slot module")
+        cols = st.columns(6)
+        for i, (_, row) in enumerate(selected_df.iterrows()):
+            with cols[i]:
+                st.markdown(f"### Slot {i+1}")
+                st.write(f"**{row['name']}**")
+                st.write(f"Category: {row['category']}")
+                st.write(f"Sponsored: {'Yes' if row['sponsored']==1 else 'No'}")
+                st.write(f"Price band: {row['price_band']}")
+                st.write(f"Relevance: {row['relevance_score']:.2f}")
+                st.write(f"Freshness: {row['freshness_score']:.2f}")
+                st.write(f"Popularity: {row['popularity_score']:.2f}")
+                st.write(f"Dynamic score: {row['dynamic_score']:.3f}")
+
+        # visualizations: category profile bar chart, slot category distribution, score breakdown
+        st.markdown("---")
+        st.subheader("Category optimal profiles (embedded in the model)")
+        cat_df = pd.DataFrame(CATEGORY_WEIGHTS).T.reset_index().rename(columns={"index":"Category"})
+        st.bar_chart(cat_df.set_index('Category'))
+
+        st.subheader("Slot category distribution")
+        slot_counts = Counter(selected_df['category'])
+        dist_df = pd.DataFrame(list(slot_counts.items()), columns=['Category','Count']).set_index('Category')
+        st.bar_chart(dist_df)
+
+        st.subheader("Selected items - table")
+        st.dataframe(selected_df[['item_id','name','category','sponsored','price_band','dynamic_score']])
+
+        st.subheader("Full candidate pool (partial view)")
+        st.dataframe(df_pool.sample(min(50, len(df_pool)), random_state=seed))
+
+# Middle column: show embedded optimal values explanation and visual
+with mid_col:
+    st.header("What do the embedded optimal values mean?")
+    st.markdown(
+        """
+        - **Relevance**: how tightly this category benefits from matching explicit user intent. Higher means we prioritize intent-match.
+        - **Diversity**: how important it is to show varied subtypes within the category (helps discovery). Higher means more penalty for repeats.
+        - **Freshness**: importance of surfacing new arrivals / recent items (higher for grocery, makeup trends, toys releases).
+        - **Monetization**: categories where revenue or sponsored placements are more important (e.g., vehicles/electronics).
+
+        These are *heuristic* priors encoded to bias selection; they are not absolute rules. In practice you'd A/B test these.
+        """
+    )
+
+    st.markdown("---")
+    st.subheader("Category priority radar (visual intuition)")
+    # radar-like visualization using matplotlib polar
+    fig = plt.figure(figsize=(6,4))
+    categories = list(CATEGORY_WEIGHTS.keys())
+    signals = ["relevance","diversity","freshness","monetization"]
+
+    # plot each category as a line
+    ax = fig.add_subplot(111)
+    for cat in categories:
+        vals = [CATEGORY_WEIGHTS[cat][s] for s in signals]
+        ax.plot(signals, vals, marker='o', label=cat)
+
+    ax.set_ylim(0,1)
+    ax.set_title('Category priority signals (line view)')
+    ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.05))
+    st.pyplot(fig)
+
+# Right column: show pool and quick sensitivity simulation
+with right_col:
+    st.header("Quick sensitivity: simulate by category focus")
+    focus_cat = st.selectbox("Temporarily boost a category (simulated)", [None] + ALL_CATEGORIES)
+    boost_amount = st.slider("Boost amount (additive to relevance)", 0.0, 0.5, 0.12)
+
+    if st.button("Run focused simulation"):
+        df_pool = generate_products(120, seed)
+        # create a copy of global weights and bias relevance for focused category
+        gw = global_weights.copy()
+        if focus_cat:
+            # increase relevance weight for items in focus category by boosting their relevance signal
+            df_pool.loc[df_pool['category']==focus_cat,'relevance_score'] = (
+                df_pool.loc[df_pool['category']==focus_cat,'relevance_score'] + boost_amount
+            ).clip(0,1)
+
+        selected_df = simulate_module(df_pool, gw, max_sponsored, use_cat_bias)
+        st.subheader("Focused run - selected category counts")
+        st.bar_chart(pd.DataFrame(Counter(selected_df['category']).items(), columns=['Category','Count']).set_index('Category'))
+        st.subheader("Selected items (focused run)")
+        st.write(selected_df[['name','category','dynamic_score']])
+
+st.caption("Script embeds category priors you asked for, simulates competition across categories for 6 slots, and visualizes outcomes. Tune sliders to build intuition.")
