@@ -7,9 +7,6 @@ Original file is located at
     https://colab.research.google.com/drive/1nTsOtwBNrN7yw0pDzG1ZV-A0naPGLZps
 """
 
-# -*- coding: utf-8 -*-
-"""streamlit_app - simple table output"""
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -19,7 +16,6 @@ from collections import Counter
 st.set_page_config(layout="wide", page_title="6-Slot Module Simulation — Category-aware")
 
 # -------------------------
-# Embedded optimal weights per category
 CATEGORY_WEIGHTS = {
     "Collectibles": {"relevance": 0.55, "diversity": 0.30, "freshness": 0.40, "monetization": 0.25},
     "Electronics":  {"relevance": 0.75, "diversity": 0.10, "freshness": 0.35, "monetization": 0.40},
@@ -32,14 +28,12 @@ CATEGORY_WEIGHTS = {
 ALL_CATEGORIES = list(CATEGORY_WEIGHTS.keys())
 
 # -------------------------
-# Generate mock product pool
 @st.cache_data
 def generate_products(n=80, seed=42):
     random.seed(seed)
     np.random.seed(seed)
     products = []
     price_bands = ["Low", "Mid", "High"]
-
     for i in range(n):
         cat = random.choice(ALL_CATEGORIES)
         products.append({
@@ -58,7 +52,6 @@ def generate_products(n=80, seed=42):
     return pd.DataFrame(products)
 
 # -------------------------
-# Compute dynamic score
 def compute_dynamic_score(row, global_weights, used_subcats, slot_idx, current_sponsored, max_sponsored, use_category_bias=True):
     base = (
         row["relevance_score"] * global_weights["relevance"] +
@@ -68,7 +61,6 @@ def compute_dynamic_score(row, global_weights, used_subcats, slot_idx, current_s
         row["seller_health"] * global_weights["seller_health"] +
         row["freshness_score"] * global_weights["freshness"]
     )
-
     if use_category_bias:
         cat_profile = CATEGORY_WEIGHTS.get(row["category"])
         if cat_profile:
@@ -79,26 +71,19 @@ def compute_dynamic_score(row, global_weights, used_subcats, slot_idx, current_s
                 (1.0 - row["popularity_score"]) * (cat_profile["diversity"] * 0.6)
             )
             base = 0.85 * base + 0.15 * align
-
     if row["category"] in used_subcats:
         base -= 0.12 * used_subcats[row["category"]]
-
     if slot_idx == 4:
         base += 0.12 * row["freshness_score"]
-
     if row["sponsored"] == 1 and current_sponsored < max_sponsored:
         base += global_weights.get("sponsored_bonus", 0.12)
-
     return base
 
-# -------------------------
-# Simulate 6-slot module
 def simulate_module(df_pool, global_weights, max_sponsored=2, use_category_bias=True):
     pool = df_pool.copy().reset_index(drop=True)
     selected = []
     used_subcats = {}
     current_sponsored = 0
-
     for slot in range(1,7):
         pool["dynamic_score"] = pool.apply(
             lambda r: compute_dynamic_score(r, global_weights, used_subcats, slot, current_sponsored, max_sponsored, use_category_bias),
@@ -107,46 +92,49 @@ def simulate_module(df_pool, global_weights, max_sponsored=2, use_category_bias=
         best_idx = pool["dynamic_score"].idxmax()
         best_row = pool.loc[best_idx]
         selected.append(best_row)
-
         cat = best_row["category"]
         used_subcats[cat] = used_subcats.get(cat, 0) + 1
         if best_row["sponsored"] == 1:
             current_sponsored += 1
-
         pool = pool.drop(index=best_idx).reset_index(drop=True)
-
     return pd.DataFrame(selected).reset_index(drop=True)
 
 # -------------------------
-# Streamlit UI
-st.title("6-Slot Module Simulation — Category-aware")
+# Layout: left filters, right views
+left_col, right_col = st.columns([1,2])
 
-# Controls
-num_items = st.number_input("Product pool size", 30, 500, 120, 10)
-max_sponsored = st.slider("Max sponsored slots", 0, 6, 2)
-seed = st.number_input("Random seed", 0, 9999, 42)
-use_cat_bias = st.checkbox("Use category optimal bias", True)
+with left_col:
+    st.header("Filters & Controls")
+    num_items = st.number_input("Product pool size", 30, 500, 120, 10)
+    max_sponsored = st.slider("Max sponsored slots", 0, 6, 2)
+    seed = st.number_input("Random seed", 0, 9999, 42)
+    use_cat_bias = st.checkbox("Use category optimal bias", True)
+    st.subheader("Global weight sliders")
+    global_weights = {
+        "relevance": st.slider("Relevance", 0.0, 1.0, 0.30),
+        "personalization": st.slider("Personalization", 0.0, 1.0, 0.25),
+        "quality": st.slider("Quality", 0.0, 1.0, 0.15),
+        "popularity": st.slider("Popularity", 0.0, 1.0, 0.10),
+        "seller_health": st.slider("Seller Health", 0.0, 1.0, 0.10),
+        "freshness": st.slider("Freshness", 0.0, 1.0, 0.05),
+        "sponsored_bonus": st.slider("Sponsored Bonus", 0.0, 0.5, 0.12)
+    }
+    run_sim = st.button("Run Simulation")
 
-st.subheader("Global weight sliders")
-global_weights = {
-    "relevance": st.slider("Relevance", 0.0, 1.0, 0.30),
-    "personalization": st.slider("Personalization", 0.0, 1.0, 0.25),
-    "quality": st.slider("Quality", 0.0, 1.0, 0.15),
-    "popularity": st.slider("Popularity", 0.0, 1.0, 0.10),
-    "seller_health": st.slider("Seller Health", 0.0, 1.0, 0.10),
-    "freshness": st.slider("Freshness", 0.0, 1.0, 0.05),
-    "sponsored_bonus": st.slider("Sponsored Bonus", 0.0, 0.5, 0.12)
-}
+with right_col:
+    if run_sim:
+        df_pool = generate_products(num_items, seed)
+        selected_df = simulate_module(df_pool, global_weights, max_sponsored, use_cat_bias)
 
-if st.button("Run Simulation"):
-    df_pool = generate_products(num_items, seed)
-    selected_df = simulate_module(df_pool, global_weights, max_sponsored, use_cat_bias)
+        st.subheader("All Categories & Optimal Values")
+        st.dataframe(pd.DataFrame(CATEGORY_WEIGHTS).T)
 
-    st.subheader("Category optimal values (all categories)")
-    st.dataframe(pd.DataFrame(CATEGORY_WEIGHTS).T)
+        st.subheader("Selected 6-Slot Items")
+        st.dataframe(selected_df[['item_id','name','category','sponsored','price_band','dynamic_score']])
 
-    st.subheader("Selected 6-slot items")
-    st.dataframe(selected_df[['item_id','name','category','sponsored','price_band','dynamic_score']])
+        st.subheader("Partial Candidate Pool")
+        st.dataframe(df_pool.sample(min(50,len(df_pool)), random_state=seed))
 
-    st.subheader("Full candidate pool (partial view)")
-    st.dataframe(df_pool.sample(min(50,len(df_pool)), random_state=seed))
+        st.subheader("Selected Item Counts per Category")
+        counts = pd.DataFrame(Counter(selected_df['category']).items(), columns=['Category','Count']).set_index('Category')
+        st.dataframe(counts)
